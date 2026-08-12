@@ -28,7 +28,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Core Data Processing ---
+# --- 2. Helper Functions ---
 @st.cache_data
 def clean_headers(df):
     header_idx = next((i for i, row in df.iterrows() if 'Company' in str(row.values)), None)
@@ -43,7 +43,8 @@ def clean_headers(df):
     df['Company'] = df['Company'].ffill()
     return df
 
-def normalize_text(text): return re.sub(r'\(.*?\)', '', str(text).lower().strip()).strip()
+def normalize_text(text): 
+    return re.sub(r'\(.*?\)', '', str(text).lower().strip()).strip()
 
 def extract_numeric(val):
     try:
@@ -51,6 +52,15 @@ def extract_numeric(val):
         return float(matches[0]) if matches else None
     except:
         return None
+
+def sanitize_for_arrow(df):
+    """Converts mixed-type object columns into clean strings to prevent PyArrow serialization errors."""
+    if df.empty: return df
+    clean_df = df.copy()
+    for col in clean_df.columns:
+        if clean_df[col].dtype == 'object':
+            clean_df[col] = clean_df[col].astype(str).replace({'nan': '', 'None': ''})
+    return clean_df
 
 @st.cache_data
 def load_historical_data():
@@ -103,19 +113,17 @@ def get_timeline_grouping(df):
     
     return grouped.sort_values('SortKey'), valid_df
 
-# --- Heatmap Generator with Hover Targeting ---
+# --- Heatmap Generator ---
 def build_heatmap(df, val_col, title, colorscale):
     if df.empty or val_col not in df.columns or 'Time_Label' not in df.columns: return go.Figure()
     
     valid_df = df.dropna(subset=[val_col, 'SortKey', 'Time_Label']).copy()
     if valid_df.empty: return go.Figure()
     
-    # Financial Buckets
     bins = [0, 8, 12, 16, 25, 40, 100]
     labels = ['< 8 LPA', '8 - 12 LPA', '12 - 16 LPA', '16 - 25 LPA', '25 - 40 LPA', '40+ LPA']
     valid_df['Bucket'] = pd.cut(valid_df[val_col], bins=bins, labels=labels, right=False)
     
-    # Group to map both the quantitative count and the qualitative company names
     grouped = valid_df.groupby(['Bucket', 'Time_Label'], observed=True).agg(
         Count=('Company', 'count'),
         Company_List=('Company', lambda x: '<br> • '.join(list(x)[:10]) + ('<br>   <i>...and more</i>' if len(x)>10 else ''))
@@ -267,11 +275,11 @@ if uploaded_file and not df_26.empty:
             with col_26:
                 st.markdown(f"**2026 Companies ({selected_week_label})**")
                 week_df_26 = valid_26[valid_26['Time_Label'] == selected_week_label]
-                st.dataframe(week_df_26[['Company', 'Role', 'Parsed_CTC', 'GPA Cutoff', 'Note']] if not week_df_26.empty else pd.DataFrame(), use_container_width=True)
+                st.dataframe(sanitize_for_arrow(week_df_26[['Company', 'Role', 'Parsed_CTC', 'GPA Cutoff', 'Note']] if not week_df_26.empty else pd.DataFrame()), use_container_width=True)
             with col_27:
                 st.markdown(f"**2027 Companies ({selected_week_label})**")
                 week_df_27 = valid_27[valid_27['Time_Label'] == selected_week_label] if not valid_27.empty else pd.DataFrame()
-                st.dataframe(week_df_27[['Company', 'Role', 'Parsed_CTC', 'GPA Cutoff', 'Note']] if not week_df_27.empty else pd.DataFrame(), use_container_width=True)
+                st.dataframe(sanitize_for_arrow(week_df_27[['Company', 'Role', 'Parsed_CTC', 'GPA Cutoff', 'Note']] if not week_df_27.empty else pd.DataFrame()), use_container_width=True)
 
     # --- TAB 3: Ghost List ---
     with tab3:
@@ -298,12 +306,12 @@ if uploaded_file and not df_26.empty:
                 if not ghost_grouped.empty:
                     selected_ghost_week = st.selectbox("Select a week to view exact metadata for the pending companies expected to drop:", ghost_grouped.sort_values('SortKey')['Time_Label'].tolist())
                     week_ghost_df = valid_ghost_dates[valid_ghost_dates['Time_Label'] == selected_ghost_week]
-                    st.dataframe(week_ghost_df[['Company', 'Role', 'Parsed_Base', 'Parsed_CTC', 'Source_Tier', 'GPA Cutoff']], use_container_width=True)
+                    st.dataframe(sanitize_for_arrow(week_ghost_df[['Company', 'Role', 'Parsed_Base', 'Parsed_CTC', 'Source_Tier', 'GPA Cutoff']]), use_container_width=True)
 
             with ghost_tab2:
                 cols_to_display = ['Company', 'Role', 'Parsed_Base', 'Parsed_CTC', 'Source_Tier', 'GPA Cutoff', 'OA Date']
                 valid_cols = [c for c in cols_to_display if c in ghosts_df.columns]
-                st.dataframe(ghosts_df[valid_cols].sort_values('Parsed_CTC', ascending=False), use_container_width=True)
+                st.dataframe(sanitize_for_arrow(ghosts_df[valid_cols].sort_values('Parsed_CTC', ascending=False)), use_container_width=True)
 
     # --- TAB 4: Financial Density Heatmaps ---
     with tab4:
