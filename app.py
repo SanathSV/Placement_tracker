@@ -120,8 +120,8 @@ def get_timeline_grouping(df):
     
     return grouped.sort_values('SortKey'), valid_df
 
-# --- Heatmap Generator ---
-def build_heatmap(df, val_col, title, colorscale):
+# --- Multi-Line Density Chart Generator ---
+def build_density_line_chart(df, val_col, title):
     if df.empty or val_col not in df.columns or 'Time_Label' not in df.columns: return go.Figure()
     
     valid_df = df.dropna(subset=[val_col, 'SortKey', 'Time_Label']).copy()
@@ -131,37 +131,49 @@ def build_heatmap(df, val_col, title, colorscale):
     labels = ['< 8 LPA', '8 - 12 LPA', '12 - 16 LPA', '16 - 25 LPA', '25 - 40 LPA', '40+ LPA']
     valid_df['Bucket'] = pd.cut(valid_df[val_col], bins=bins, labels=labels, right=False)
     
-    grouped = valid_df.groupby(['Bucket', 'Time_Label'], observed=True).agg(
+    grouped = valid_df.groupby(['Bucket', 'SortKey', 'Time_Label'], observed=True).agg(
         Count=('Company', 'count'),
         Company_List=('Company', lambda x: '<br> • '.join(list(x)[:10]) + ('<br>   <i>...and more</i>' if len(x)>10 else ''))
     ).reset_index()
     
-    count_matrix = grouped.pivot(index='Bucket', columns='Time_Label', values='Count').fillna(0)
-    comps_matrix = grouped.pivot(index='Bucket', columns='Time_Label', values='Company_List').fillna('No Companies Scheduled')
+    color_map = {
+        '< 8 LPA': '#8892B0',       # Muted Slate
+        '8 - 12 LPA': '#3A86FF',    # Bright Blue
+        '12 - 16 LPA': '#A020F0',   # Purple
+        '16 - 25 LPA': '#F15BB5',   # Pink
+        '25 - 40 LPA': '#FB5607',   # Orange
+        '40+ LPA': '#00FF9D'        # Neon Green
+    }
     
+    fig = go.Figure()
     time_sort = valid_df[['Time_Label', 'SortKey']].drop_duplicates().sort_values('SortKey')
-    count_matrix = count_matrix.reindex(columns=time_sort['Time_Label'], fill_value=0)
-    comps_matrix = comps_matrix.reindex(columns=time_sort['Time_Label'], fill_value='No Companies Scheduled')
+    full_time_labels = time_sort['Time_Label'].tolist()
     
-    count_matrix = count_matrix.reindex(labels[::-1]) 
-    comps_matrix = comps_matrix.reindex(labels[::-1])
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=count_matrix.values,
-        x=count_matrix.columns,
-        y=count_matrix.index,
-        colorscale=colorscale,
-        text=count_matrix.values,
-        texttemplate="%{text}",
-        customdata=comps_matrix.values,
-        showscale=False,
-        hovertemplate="<b>%{x}</b><br>Range: %{y}<br>OAs Conducted: %{z} Companies<br><br><b>Companies:</b><br>%{customdata}<extra></extra>"
-    ))
-    
+    for bucket in labels:
+        bucket_data = grouped[grouped['Bucket'] == bucket].copy()
+        if not bucket_data.empty and bucket_data['Count'].sum() > 0:
+            merged_time = pd.merge(time_sort, bucket_data, on=['Time_Label', 'SortKey'], how='left').fillna({'Count': 0, 'Company_List': 'No Companies'})
+            
+            fig.add_trace(go.Scatter(
+                x=merged_time['Time_Label'],
+                y=merged_time['Count'],
+                mode='lines+markers',
+                name=bucket,
+                line=dict(color=color_map[bucket], width=3, shape='spline', smoothing=0.3),
+                marker=dict(size=6),
+                customdata=merged_time[['Company_List']],
+                hovertemplate="<b>%{y} Companies</b><br>%{customdata[0]}<extra></extra>"
+            ))
+            
     fig.update_layout(
         title=title,
+        xaxis_title="Placement Calendar",
+        yaxis_title="Volume of OAs",
         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'),
-        xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
+        xaxis=dict(categoryorder='array', categoryarray=full_time_labels, showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        hovermode='x unified', # This is the magic line that slices through all buckets at once
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=50, b=20, l=10, r=10)
     )
     return fig
@@ -180,7 +192,6 @@ def build_bell_curve(df26, df27, val_col, title, color_26, color_27):
             hovertemplate="Compensation: %{x} LPA<br>Companies: %{y}<extra></extra>"
         ))
         
-        # Overlay Gaussian Normal Distribution (Bell Curve)
         mu, sigma = valid_26.mean(), valid_26.std()
         if pd.notna(sigma) and sigma > 0:
             x_val = np.linspace(0, max(valid_26)+10, 100)
@@ -242,7 +253,7 @@ if uploaded_file and not df_26.empty:
     if gpa_col_27: df_27['Parsed_GPA'] = df_27[gpa_col_27].apply(extract_numeric)
     if oa_col_27: df_27['OA_Date_Parsed'] = pd.to_datetime(df_27[oa_col_27], errors='coerce')
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🚀 Target Intel", "⏱️ Timeline Radar", "👻 Ghost List", "🔥 Financial Heatmaps"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🚀 Target Intel", "⏱️ Timeline Radar", "👻 Ghost List", "📈 Financial Trends & Bell Curves"])
 
     # --- TAB 1: Core Target Intel ---
     with tab1:
@@ -398,25 +409,25 @@ if uploaded_file and not df_26.empty:
                 valid_cols = [c for c in cols_to_display if c in ghosts_df.columns]
                 st.dataframe(sanitize_for_arrow(ghosts_df[valid_cols].sort_values('Parsed_CTC', ascending=False)), use_container_width=True)
 
-    # --- TAB 4: Financial Density Heatmaps & Bell Curves ---
+    # --- TAB 4: Density Trend Lines & Bell Curves ---
     with tab4:
-        st.subheader("🔥 Financial Density (Time vs. Compensation)")
-        st.markdown("Hover over any cell block to reveal exactly which companies fall into that financial bracket during that week.")
+        st.subheader("📈 Salary Density Trends (Time vs. Compensation Volume)")
+        st.markdown("This multi-line radar tracks precisely when different financial brackets test. Hover anywhere on the chart to instantly slice through all brackets for that specific week.")
         
         _, valid_heatmap_26 = get_timeline_grouping(df_26)
         
-        col_heat1, col_heat2 = st.columns(2)
+        col_line1, col_line2 = st.columns(2)
         
-        with col_heat1:
+        with col_line1:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_ctc = build_heatmap(valid_heatmap_26, 'Parsed_CTC', "Total CTC Distribution by Week", "Teal")
-            st.plotly_chart(fig_ctc, use_container_width=True)
+            fig_ctc_line = build_density_line_chart(valid_heatmap_26, 'Parsed_CTC', "Total CTC Bracket Volumes by Week")
+            st.plotly_chart(fig_ctc_line, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
             
-        with col_heat2:
+        with col_line2:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_base = build_heatmap(valid_heatmap_26, 'Parsed_Base', "Base Salary Distribution by Week", "Purpor")
-            st.plotly_chart(fig_base, use_container_width=True)
+            fig_base_line = build_density_line_chart(valid_heatmap_26, 'Parsed_Base', "Base Salary Bracket Volumes by Week")
+            st.plotly_chart(fig_base_line, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
             
         st.divider()
