@@ -165,8 +165,8 @@ def build_heatmap(df, val_col, title, colorscale):
     )
     return fig
 
-# --- 2. Multi-Line Density Chart Generator ---
-def build_density_line_chart(df, val_col, title):
+# --- 2. Filterable Multi-Line Density Chart Generator ---
+def build_density_line_chart(df, val_col, title, selected_buckets):
     if df.empty or val_col not in df.columns or 'Time_Label' not in df.columns: return go.Figure()
     valid_df = df.dropna(subset=[val_col, 'SortKey', 'Time_Label']).copy()
     if valid_df.empty: return go.Figure()
@@ -189,16 +189,15 @@ def build_density_line_chart(df, val_col, title):
     time_sort = valid_df[['Time_Label', 'SortKey']].drop_duplicates().sort_values('SortKey')
     full_time_labels = time_sort['Time_Label'].tolist()
     
-    for bucket in labels:
+    for bucket in selected_buckets:
         bucket_data = grouped[grouped['Bucket'] == bucket].copy()
-        if not bucket_data.empty and bucket_data['Count'].sum() > 0:
-            merged_time = pd.merge(time_sort, bucket_data, on=['Time_Label', 'SortKey'], how='left').fillna({'Count': 0, 'Company_List': 'No Companies'})
-            fig.add_trace(go.Scatter(
-                x=merged_time['Time_Label'], y=merged_time['Count'], mode='lines+markers', name=bucket,
-                line=dict(color=color_map[bucket], width=3, shape='spline', smoothing=0.3), marker=dict(size=6),
-                customdata=merged_time[['Company_List']],
-                hovertemplate="<b>%{y} Companies</b><br>%{customdata[0]}<extra></extra>"
-            ))
+        merged_time = pd.merge(time_sort, bucket_data, on=['Time_Label', 'SortKey'], how='left').fillna({'Count': 0, 'Company_List': 'No Companies'})
+        fig.add_trace(go.Scatter(
+            x=merged_time['Time_Label'], y=merged_time['Count'], mode='lines+markers', name=bucket,
+            line=dict(color=color_map[bucket], width=3, shape='spline', smoothing=0.3), marker=dict(size=6),
+            customdata=merged_time[['Company_List']],
+            hovertemplate="<b>%{y} Companies</b><br>%{customdata[0]}<extra></extra>"
+        ))
             
     fig.update_layout(
         title=title, xaxis_title="Placement Calendar", yaxis_title="Volume of OAs",
@@ -432,11 +431,10 @@ if uploaded_file and not df_26.empty:
                 valid_cols = [c for c in cols_to_display if c in ghosts_df.columns]
                 st.dataframe(sanitize_for_arrow(ghosts_df[valid_cols].sort_values('Parsed_CTC', ascending=False)), use_container_width=True)
 
-    # --- TAB 4: Financial Density Heatmaps, Trends & Bell Curves ---
+    # --- TAB 4: Financial Density Heatmaps, Filterable Trends & Bell Curves ---
     with tab4:
-        # Part A: The Grid Heatmaps
         st.subheader("🔥 Financial Density Heatmaps")
-        st.markdown("A grid-based view to see exactly which weeks hold the highest concentration of high-paying companies.")
+        st.markdown("Grid-based view of historical OA concentration across compensation brackets and calendar weeks.")
         _, valid_heatmap_26 = get_timeline_grouping(df_26)
         
         col_heat1, col_heat2 = st.columns(2)
@@ -454,41 +452,42 @@ if uploaded_file and not df_26.empty:
 
         st.divider()
 
-        # Part B: The Multi-Line Density Trends
-        st.subheader("📈 Salary Bracket Density Trends")
-        st.markdown("Overlapping continuous lines tracking the exact velocity of different financial brackets across the academic calendar.")
+        st.subheader("📈 Salary Bracket Density Trends (Filterable)")
+        st.markdown("Use the filter below to isolate specific salary ranges on the time-series radar lines.")
+        
+        all_brackets = ['< 8 LPA', '8 - 12 LPA', '12 - 16 LPA', '16 - 25 LPA', '25 - 40 LPA', '40+ LPA']
+        selected_buckets = st.multiselect("Filter Salary Brackets for Trend Lines:", all_brackets, default=all_brackets)
         
         col_line1, col_line2 = st.columns(2)
         with col_line1:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_ctc_line = build_density_line_chart(valid_heatmap_26, 'Parsed_CTC', "Total CTC Bracket Volumes")
+            fig_ctc_line = build_density_line_chart(valid_heatmap_26, 'Parsed_CTC', "Total CTC Bracket Volumes", selected_buckets)
             st.plotly_chart(fig_ctc_line, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
             
         with col_line2:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_base_line = build_density_line_chart(valid_heatmap_26, 'Parsed_Base', "Base Salary Bracket Volumes")
+            fig_base_line = build_density_line_chart(valid_heatmap_26, 'Parsed_Base', "Base Salary Bracket Volumes", selected_buckets)
             st.plotly_chart(fig_base_line, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
             
         st.divider()
         
-        # Part C: The Statistical Bell Curves
-        st.subheader("🔔 The Market Bell Curve")
-        st.markdown("Overlays a mathematical Gaussian distribution onto the raw histogram to visualize the true probability spread.")
+        # st.subheader("🔔 The Market Bell Curve")
+        # st.markdown("Overlays a mathematical Gaussian distribution onto the raw histogram to visualize the true probability spread.")
         
-        col_bell1, col_bell2 = st.columns(2)
-        with col_bell1:
-            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_ctc_bell = build_bell_curve(df_26, df_27, 'Parsed_CTC', "Total CTC Spread", '#8892B0', '#00FF9D')
-            st.plotly_chart(fig_ctc_bell, use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        # col_bell1, col_bell2 = st.columns(2)
+        # with col_bell1:
+        #     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        #     fig_ctc_bell = build_bell_curve(df_26, df_27, 'Parsed_CTC', "Total CTC Spread", '#8892B0', '#00FF9D')
+        #     st.plotly_chart(fig_ctc_bell, use_container_width=True)
+        #     st.markdown("</div>", unsafe_allow_html=True)
             
-        with col_bell2:
-            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-            fig_base_bell = build_bell_curve(df_26, df_27, 'Parsed_Base', "Base Salary Spread", '#8892B0', '#00FF9D')
-            st.plotly_chart(fig_base_bell, use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        # with col_bell2:
+        #     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        #     fig_base_bell = build_bell_curve(df_26, df_27, 'Parsed_Base', "Base Salary Spread", '#8892B0', '#00FF9D')
+        #     st.plotly_chart(fig_base_bell, use_container_width=True)
+        #     st.markdown("</div>", unsafe_allow_html=True)
 
 else:
     st.info("👈 Upload your 2027 Placements data in the sidebar to initialize the Intelligence Engine.")
