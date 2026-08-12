@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import re
@@ -44,7 +45,14 @@ def clean_headers(df):
     return df
 
 def normalize_text(text): 
-    return re.sub(r'\(.*?\)', '', str(text).lower().strip()).strip()
+    name = str(text).lower().strip()
+    name = re.sub(r'\(.*?\)', '', name) 
+    name = re.sub(r'[^a-z0-9]', '', name)
+    suffixes = ['groups', 'group', 'technologies', 'technology', 'tech', 'apps', 'app', 'solutions', 'labs', 'inc', 'pvt', 'ltd']
+    for s in suffixes:
+        if name.endswith(s) and len(name) > len(s):
+            name = name[:-len(s)]
+    return name.strip()
 
 def extract_numeric(val):
     try:
@@ -54,7 +62,6 @@ def extract_numeric(val):
         return None
 
 def sanitize_for_arrow(df):
-    """Converts mixed-type object columns into clean strings to prevent PyArrow serialization errors."""
     if df.empty: return df
     clean_df = df.copy()
     for col in clean_df.columns:
@@ -159,6 +166,58 @@ def build_heatmap(df, val_col, title, colorscale):
     )
     return fig
 
+# --- Statistical Bell Curve Generator ---
+def build_bell_curve(df26, df27, val_col, title, color_26, color_27):
+    fig = go.Figure()
+    bin_size = 2
+    
+    valid_26 = df26[val_col].dropna() if not df26.empty and val_col in df26.columns else pd.Series()
+    if not valid_26.empty:
+        fig.add_trace(go.Histogram(
+            x=valid_26, name="2026 Historical",
+            marker_color=color_26, opacity=0.4,
+            xbins=dict(start=0, end=max(valid_26)+5, size=bin_size),
+            hovertemplate="Compensation: %{x} LPA<br>Companies: %{y}<extra></extra>"
+        ))
+        
+        # Overlay Gaussian Normal Distribution (Bell Curve)
+        mu, sigma = valid_26.mean(), valid_26.std()
+        if pd.notna(sigma) and sigma > 0:
+            x_val = np.linspace(0, max(valid_26)+10, 100)
+            y_val = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_val - mu) / sigma)**2)
+            y_scaled = y_val * len(valid_26) * bin_size
+            fig.add_trace(go.Scatter(
+                x=x_val, y=y_scaled, mode='lines', name="2026 Bell Curve",
+                line=dict(color=color_26, width=3, dash='dot'), hoverinfo='skip'
+            ))
+
+    valid_27 = df27[val_col].dropna() if not df27.empty and val_col in df27.columns else pd.Series()
+    if not valid_27.empty:
+        fig.add_trace(go.Histogram(
+            x=valid_27, name="2027 Live",
+            marker_color=color_27, opacity=0.7,
+            xbins=dict(start=0, end=max(valid_27)+5, size=bin_size),
+            hovertemplate="Compensation: %{x} LPA<br>Companies: %{y}<extra></extra>"
+        ))
+        
+        mu, sigma = valid_27.mean(), valid_27.std()
+        if pd.notna(sigma) and sigma > 0:
+            x_val = np.linspace(0, max(valid_27)+10, 100)
+            y_val = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_val - mu) / sigma)**2)
+            y_scaled = y_val * len(valid_27) * bin_size
+            fig.add_trace(go.Scatter(
+                x=x_val, y=y_scaled, mode='lines', name="2027 Bell Curve",
+                line=dict(color=color_27, width=4), hoverinfo='skip'
+            ))
+
+    fig.update_layout(
+        title=title, barmode='overlay',
+        xaxis_title=f"{val_col.replace('Parsed_', '')} (LPA)", yaxis_title="Frequency (Number of Companies)",
+        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'),
+        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99)
+    )
+    return fig
+
 # --- 3. UI Structure & Ingestion ---
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/en/e/e4/PES_University_logo.png", width=120)
 st.sidebar.markdown("### 📥 Data Injection")
@@ -188,62 +247,88 @@ if uploaded_file and not df_26.empty:
     # --- TAB 1: Core Target Intel ---
     with tab1:
         st.subheader("Market X-Ray: Compare Target Offerings")
-        common_cos = set(df_26['Norm_Company']).intersection(set(df_27['Norm_Company']))
+        
+        df_27_unique = df_27.groupby('Norm_Company').first().reset_index()
+        df_26_unique = df_26.groupby('Norm_Company').first().reset_index() if not df_26.empty else pd.DataFrame()
+        merged_all = pd.merge(df_27_unique, df_26_unique, on='Norm_Company', how='left', suffixes=('_27', '_26'))
+        
+        merged_all['Parsed_CTC_26_Clean'] = merged_all['Parsed_CTC_26'].fillna(0)
+        merged_all['Parsed_CTC_27_Clean'] = merged_all['Parsed_CTC_27'].fillna(0)
+        merged_all['Delta'] = merged_all['Parsed_CTC_27_Clean'] - merged_all['Parsed_CTC_26_Clean']
+        
+        merged_all['Display_Name'] = merged_all['Company_27'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
+        merged_all = merged_all.sort_values('Delta', ascending=False)
         
         col_xray, col_delta = st.columns([1.2, 2])
         
         with col_xray:
             st.markdown("##### 🔍 Deep Target Intel")
-            target_options = sorted(list(common_cos))
-            default_target = next((c for c in ["lam research", "inmobi groups"] if c in target_options), target_options[0] if target_options else None)
-            selected_target = st.selectbox("Select Overlapping Company", target_options, index=target_options.index(default_target) if default_target else 0)
+            target_options = sorted(merged_all['Display_Name'].unique().tolist())
             
-            if selected_target:
-                t26 = df_26[df_26['Norm_Company'] == selected_target].iloc[0]
-                t27 = df_27[df_27['Norm_Company'] == selected_target].iloc[0]
+            default_target = next((c for c in ["Lam Research", "InMobi Groups", "InMobi"] if c in target_options), target_options[0] if target_options else None)
+            selected_target_name = st.selectbox("Select Applied Company (2027)", target_options, index=target_options.index(default_target) if default_target else 0)
+            
+            if selected_target_name:
+                row_selected = merged_all[merged_all['Display_Name'] == selected_target_name].iloc[0]
                 
+                ctc_26_disp = f"₹ {row_selected['Parsed_CTC_26']} LPA" if pd.notnull(row_selected['Parsed_CTC_26']) else "New Entry ('27)"
+                base_26_disp = f"₹ {row_selected['Parsed_Base_26']} LPA" if pd.notnull(row_selected['Parsed_Base_26']) else "N/A"
+                
+                ctc_27_disp = f"₹ {row_selected['Parsed_CTC_27']} LPA" if pd.notnull(row_selected['Parsed_CTC_27']) else "N/A"
+                base_27_disp = f"₹ {row_selected['Parsed_Base_27']} LPA" if pd.notnull(row_selected['Parsed_Base_27']) else "N/A"
+                
+                role_26_disp = row_selected.get('Role_26', 'N/A') if pd.notnull(row_selected.get('Role_26')) else "Did not visit"
+                role_27_disp = row_selected.get('Role_27', 'N/A')
+                
+                gpa_26_disp = row_selected.get('GPA Cutoff_26', 'N/A') if pd.notnull(row_selected.get('GPA Cutoff_26')) else "N/A"
+                gpa_27_disp = row_selected.get('GPA Cutoff_27', 'N/A') if pd.notnull(row_selected.get('GPA Cutoff_27')) else "N/A"
+                
+                note_26_disp = row_selected.get('Note_26', 'None') if pd.notnull(row_selected.get('Note_26')) else "None"
+                note_27_disp = row_selected.get('Note_27', 'None') if pd.notnull(row_selected.get('Note_27')) else "None"
+
                 st.markdown(f"""
                 <div class="glass-card">
                     <div style="display:flex; justify-content:space-between; margin-bottom:15px;">
                         <div>
                             <div class="metric-label">2026 Historical</div>
-                            <div class="metric-value">₹ {t26.get('Parsed_CTC', 'N/A')} <span style="font-size:1rem; color:#8892B0;">CTC</span></div>
-                            <div class="metric-sub">₹ {t26.get('Parsed_Base', 'N/A')} <span style="font-size:0.9rem; color:#8892B0;">BASE</span></div>
+                            <div class="metric-value" style="font-size:1.8rem; color:#8892B0;">{ctc_26_disp}</div>
+                            <div class="metric-sub" style="font-size:1rem; color:#8892B0;">Base: {base_26_disp}</div>
                         </div>
                         <div style="text-align:right;">
                             <div class="metric-label">2027 Live</div>
-                            <div class="metric-value" style="color:#636EFA;">₹ {t27.get('Parsed_CTC', 'N/A')} <span style="font-size:1rem; color:#8892B0;">CTC</span></div>
-                            <div class="metric-sub">₹ {t27.get('Parsed_Base', 'N/A') if 'Parsed_Base' in t27 else 'N/A'} <span style="font-size:0.9rem; color:#8892B0;">BASE</span></div>
+                            <div class="metric-value" style="font-size:1.8rem; color:#636EFA;">{ctc_27_disp}</div>
+                            <div class="metric-sub" style="font-size:1rem; color:#636EFA;">Base: {base_27_disp}</div>
                         </div>
                     </div>
                     <hr style="border-color: rgba(255,255,255,0.1);">
                     <div style="font-size:0.95rem; color:#E2E8F0;">
-                        <p><b>🏢 Role Shift:</b> {t26.get('Role', 'N/A')} ➔ <span class="highlight-text">{t27.get('Role', 'N/A')}</span></p>
-                        <p><b>🎓 GPA Cutoff:</b> {t26.get('GPA Cutoff', 'N/A')} ➔ <span class="highlight-text">{t27.get('GPA Cutoff', 'N/A')}</span></p>
+                        <p><b>🏢 Role Shift:</b> {role_26_disp} ➔ <span class="highlight-text">{role_27_disp}</span></p>
+                        <p><b>🎓 GPA Cutoff:</b> {gpa_26_disp} ➔ <span class="highlight-text">{gpa_27_disp}</span></p>
+                        <p><b>⚠️ 2026 Notes:</b> <i>{note_26_disp}</i></p>
+                        <p><b>⚠️ 2027 Notes:</b> <i>{note_27_disp}</i></p>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
                 
         with col_delta:
-            st.markdown("##### 💸 YoY Total CTC Deltas")
-            df_common_26 = df_26[df_26['Norm_Company'].isin(common_cos)].groupby('Norm_Company').first().reset_index()
-            df_common_27 = df_27[df_27['Norm_Company'].isin(common_cos)].groupby('Norm_Company').first().reset_index()
-            
-            merged = pd.merge(df_common_26, df_common_27, on='Norm_Company', suffixes=('_26', '_27')).dropna(subset=['Parsed_CTC_26', 'Parsed_CTC_27'])
-            merged['Delta'] = merged['Parsed_CTC_27'] - merged['Parsed_CTC_26']
-            merged = merged.sort_values('Delta', ascending=False)
-            merged['Display_Name'] = merged['Norm_Company'].str.title()
+            st.markdown("##### 💸 YoY Total CTC Deltas (All 2027 Applied Companies)")
             
             for col in ['Parsed_Base_26', 'Parsed_CTC_26', 'Role_26', 'Parsed_Base_27', 'Parsed_CTC_27', 'Role_27']:
-                merged[col] = merged[col].fillna("N/A")
+                merged_all[col] = merged_all[col].fillna("N/A")
             
-            colors = ['#00FF9D' if val > 0 else '#FF4B4B' if val < 0 else '#8892B0' for val in merged['Delta']]
+            colors = []
+            for idx, row in merged_all.iterrows():
+                if row['Parsed_CTC_26'] == "N/A": colors.append('#00D2FF')
+                elif row['Delta'] > 0: colors.append('#00FF9D')
+                elif row['Delta'] < 0: colors.append('#FF4B4B')
+                else: colors.append('#8892B0')
+            
             fig_delta = go.Figure(data=[go.Bar(
-                x=merged['Display_Name'], y=merged['Delta'], marker_color=colors, text=merged['Delta'], textposition='outside',
-                customdata=merged[['Parsed_Base_26', 'Parsed_CTC_26', 'Role_26', 'Parsed_Base_27', 'Parsed_CTC_27', 'Role_27']],
-                hovertemplate="<b>%{x}</b><br><br><b>Market Delta:</b> %{y} LPA<br><hr><b>2026:</b><br>Role: %{customdata[2]}<br>Base: %{customdata[0]} | CTC: %{customdata[1]}<br><br><b>2027:</b><br>Role: %{customdata[5]}<br>Base: %{customdata[3]} | CTC: %{customdata[4]}<extra></extra>"
+                x=merged_all['Display_Name'], y=merged_all['Delta'], marker_color=colors, text=merged_all['Delta'], textposition='outside',
+                customdata=merged_all[['Parsed_Base_26', 'Parsed_CTC_26', 'Role_26', 'Parsed_Base_27', 'Parsed_CTC_27', 'Role_27']],
+                hovertemplate="<b>%{x}</b><br><br><b>Market Delta:</b> %{y} LPA<br><hr><b>2026 Baseline:</b><br>Role: %{customdata[2]}<br>Base: %{customdata[0]} LPA | CTC: %{customdata[1]} LPA<br><br><b>2027 Current:</b><br>Role: %{customdata[5]}<br>Base: %{customdata[3]} LPA | CTC: %{customdata[4]} LPA<extra></extra>"
             )])
-            fig_delta.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'), margin=dict(l=0, r=0, t=30, b=0), height=400)
+            fig_delta.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'), margin=dict(l=0, r=0, t=30, b=0), height=420)
             st.plotly_chart(fig_delta, use_container_width=True)
 
     # --- TAB 2: Timeline Radar ---
@@ -313,7 +398,7 @@ if uploaded_file and not df_26.empty:
                 valid_cols = [c for c in cols_to_display if c in ghosts_df.columns]
                 st.dataframe(sanitize_for_arrow(ghosts_df[valid_cols].sort_values('Parsed_CTC', ascending=False)), use_container_width=True)
 
-    # --- TAB 4: Financial Density Heatmaps ---
+    # --- TAB 4: Financial Density Heatmaps & Bell Curves ---
     with tab4:
         st.subheader("🔥 Financial Density (Time vs. Compensation)")
         st.markdown("Hover over any cell block to reveal exactly which companies fall into that financial bracket during that week.")
@@ -332,6 +417,25 @@ if uploaded_file and not df_26.empty:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
             fig_base = build_heatmap(valid_heatmap_26, 'Parsed_Base', "Base Salary Distribution by Week", "Purpor")
             st.plotly_chart(fig_base, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        st.divider()
+        
+        st.subheader("🔔 The Market Bell Curve (Financial Spread)")
+        st.markdown("This overlays a mathematical Gaussian distribution onto the raw histogram of compensation packages. It proves if the 'average' package is genuine or just skewed by a few massive outliers.")
+        
+        col_bell1, col_bell2 = st.columns(2)
+        
+        with col_bell1:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            fig_ctc_bell = build_bell_curve(df_26, df_27, 'Parsed_CTC', "Total CTC Spread", '#8892B0', '#00FF9D')
+            st.plotly_chart(fig_ctc_bell, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        with col_bell2:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            fig_base_bell = build_bell_curve(df_26, df_27, 'Parsed_Base', "Base Salary Spread", '#8892B0', '#00FF9D')
+            st.plotly_chart(fig_base_bell, use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
 else:
